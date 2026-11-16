@@ -4,11 +4,12 @@ ChangeProof will detect and reproduce idempotency and duplicate-side-effect
 regressions in Python backend services. A suspicion is a candidate; a reproducible
 failing test is evidence.
 
-## Current status: Phase 1 complete
+## Current status: Phase 2, Part 1
 
 The local instrumented prototype is implemented: configuration, PostgreSQL payment
 benchmarks, deterministic campaigns, verification CLI, evidence, and reproduction
-tests. Arbitrary repository analysis and automatic instrumentation are future work.
+tests. Static Python and Git analysis now identifies candidate race windows.
+Automatic instrumentation and analysis-driven scenarios are future work.
 A valid configuration does not mean a service passed verification.
 
 ## Setup
@@ -182,5 +183,61 @@ bounded. The benchmark gateway has no real payment integration.
 
 The first milestone is complete for these instrumented targets. Passing results
 apply only to the configured bounded schedule. Crash recovery, external provider
-ambiguity, general FastAPI repository discovery, and AST/LLM analysis remain
+ambiguity, automatic repository instrumentation, and LLM-generated scenarios remain
 outside this prototype.
+
+## Two-part Phase 2 plan
+
+1. **Code analysis (implemented):** extract Python function facts, configured route
+   matches, direct local call relationships, and Git change locations. Report
+   candidate read/branch/charge/write patterns with source locations and scenario
+   recommendations. Acceptance: inspect source without executing it, narrow to
+   changed functions, and keep every static finding unconfirmed.
+2. **Targeted scenario generation (next):** connect analysis to the verifier,
+   introduce property-based input/action generation, validate LLM-proposed
+   hypotheses and scenarios against a bounded schema, and benchmark failures beyond
+   the current templates. Acceptance: an independently reproduced defect requiring
+   generated inputs or actions, with evidence and a runnable regression test.
+
+Part 1 does not invoke an LLM or generate property-based campaigns. Those belong
+to Part 2, where candidate suggestions must never change the explicit oracle.
+
+## Analyze source without running it
+
+The analyzer uses the Python standard library. It needs neither the target's
+installed dependencies, a target adapter, nor a running database.
+
+```sh
+changeproof analyze --repo ./examples/payment_service --config ./configs/payment-idempotency.yaml --output ./reports/analysis.json
+changeproof analyze --repo . --base HEAD~1 --config ./configs/payment-idempotency.yaml --output ./reports/changes.json
+```
+
+Without `--base`, all Python files under the selected directory are inspected.
+With `--base`, Git compares that revision to the current worktree, including
+staged, unstaged, and untracked Python files. Paths in Git mode are relative to
+the Git root. Functions intersecting changed lines are selected; unchanged
+functions in changed files may appear as endpoint or call-graph context. Removed
+functions have no current body to analyze. An invalid base is an error, not an
+empty successful report. The Git executable must be installed for this mode.
+
+JSON includes function/decorator locations, literal route mappings, assignments,
+ordered calls, conditions, exception handlers, lexical and `self`/`cls` call
+links within a file, and candidate race windows. Candidates recommend two
+concurrent requests at `after_key_lookup`; execution and report linking are still
+separate operations. The analyzer does not add hooks to target code.
+
+A candidate requires a recognized read, a conditional, a charge call, and a later
+write in one function. Charge names and literal `post("/charges")` calls are
+recognized; database names and simple literal payment SQL supply read/write
+heuristics. Observed reservation calls are recorded, but do not prove safety or
+suppress candidates. The shared sample handler contains both vulnerable and
+corrected branches, so it remains a candidate until a campaign tests a variant.
+
+These are syntactic heuristics: no cross-module propagation, alias/type resolution,
+branch feasibility, router-prefix resolution, or atomicity proof is claimed.
+Candidates can be false positives; unfamiliar wrappers can be missed. Finding
+nothing is not evidence of correctness. Analysis exits 0 when inspection completes,
+even with candidates, and 2 for invalid input, Git errors, or incomplete parsing.
+Syntax/encoding/read errors are included in `diagnostics` and mark the report
+incomplete. Files over 1 MB are reported as incomplete; scans over 1,000 Python
+files are rejected. Symlinks and common dependency/build directories are skipped.
