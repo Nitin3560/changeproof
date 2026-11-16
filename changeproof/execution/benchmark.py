@@ -8,21 +8,31 @@ from examples.payment_service.storage import Store
 
 from .runner import run_case
 from .scheduler import Scheduler
+from .sandbox import isolated_database
 
 
-async def run_benchmark(config, variant, *, dsn=None, timeout=15):
-    """Exercise the instrumented sample with ASGI requests and real PostgreSQL state."""
+async def run_benchmark(config, variant, *, dsn=None, timeout=15, app_factory=None, scenarios=None):
+    """Exercise an instrumented target with disposable PostgreSQL state."""
+    async with isolated_database(dsn) as isolated_dsn:
+        return await _run_campaign(config, variant, dsn=isolated_dsn, timeout=timeout,
+                                   app_factory=app_factory, scenarios=scenarios)
+
+
+async def _run_campaign(config, variant, *, dsn, timeout, app_factory, scenarios):
     if variant not in {"vulnerable", "corrected"}:
         raise ValueError("Unknown service variant")
     if config.service.endpoint != "/payments":
         raise ValueError("The sample benchmark only supports /payments")
     store = Store(dsn)
-    await store.initialize()
+    import asyncio
+    async with asyncio.timeout(timeout):
+        await store.initialize()
     gateway = httpx.ASGITransport(app=gateway_app(store))
     results = []
-    for scenario in generate(config):
+    for scenario in (generate(config) if scenarios is None else scenarios):
         scheduler = Scheduler(scenario.request_count if scenario.concurrent else 1)
-        app = create_app(variant, store, gateway, hook=scheduler)
+        app = (app_factory(store, gateway, scheduler) if app_factory else
+               create_app(variant, store, gateway, hook=scheduler))
 
         async def read_effects(key):
             return await store.charges(variant, key)
