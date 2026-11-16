@@ -4,15 +4,16 @@ ChangeProof will detect and reproduce idempotency and duplicate-side-effect
 regressions in Python backend services. A suspicion is a candidate; a reproducible
 failing test is evidence.
 
-## Current status: Phase 3, Part 1
+## Current status: Phase 3 code implemented; live App setup pending
 
 The local instrumented prototype is implemented: configuration, PostgreSQL payment
 benchmarks, deterministic campaigns, verification CLI, evidence, and reproduction
 tests. Python/Git analysis now feeds bounded generated campaigns, property-based
 search and shrinking, and optional validated model suggestions. Automatic
 instrumentation and arbitrary repository execution remain future work. GitHub
-webhook intake now persists allowlisted PR jobs; verification workers and GitHub
-Checks publication are the next part.
+webhook intake persists allowlisted PR jobs, and an isolated worker can verify
+approved snapshots and publish GitHub Checks. Live App registration, installation,
+and deployment still require operator configuration.
 A valid configuration does not mean a service passed verification.
 
 ## Setup
@@ -317,14 +318,14 @@ local benchmark; SDK request/response handling is tested with mock HTTP response
    installation/repository scope, normalize pull-request revisions, and persist
    deduplicated jobs. Acceptance: valid events survive restarts, concurrent
    redeliveries enqueue one job, and invalid signatures never queue work.
-2. **PR verification and Checks (next):** add GitHub App authentication, claim jobs
+2. **PR verification and Checks (implemented; live setup pending):** add GitHub App authentication, claim jobs
    in a worker, confirm the PR still targets the queued revision, run bounded
    verification for explicitly approved targets, and publish GitHub Checks with
    evidence. Acceptance: an installed app completes a check on the correct PR
    commit, handles retries/stale work, and never reports an incomplete run as passed.
 
-Part 1 is a local intake service. No GitHub App has been registered, installed,
-or deployed by these changes, and no jobs execute or publish Checks yet.
+Part 1 is a local intake service. Part 2 supplies the worker and Checks client.
+No live GitHub App has been registered, installed, or deployed by these changes.
 
 ## Run GitHub webhook intake
 
@@ -400,10 +401,124 @@ mode; it does not promise database availability or successful verification.
 
 For later GitHub App setup, subscribe to pull-request events and use an HTTPS
 webhook URL ending in `/github/webhooks` with the configured secret. Pull-request
-read access is sufficient for intake; Check publication and checkout permissions
-will be addressed in Part 2. Do not treat an acknowledgement as a verification
+read access is sufficient for intake; Worker permissions are listed below. Do not treat an acknowledgement as a verification
 result. Queued events may arrive out of order, and closed/draft/installation
-lifecycle events do not cancel existing jobs in Part 1. The future worker must
-recheck installation access, PR readiness, and current SHAs before execution and
-publication. No webhook handler clones repositories, imports adapters, calls an
+lifecycle events do not cancel existing jobs in Part 1. The worker rechecks installation access, PR readiness, and current SHAs before
+execution and publication. No webhook handler clones repositories, imports adapters, calls an
 LLM, runs tests, or sends GitHub comments.
+
+## Process approved PR jobs and publish GitHub Checks
+
+Run the worker on the Docker host, separately from the intake service. It needs
+the same SQLite queue file, Docker Engine/Desktop, and local trusted policy. It
+does not mount the Docker socket into verification containers.
+
+```sh
+python -m pip install -e '.[github]'
+docker build -t changeproof-worker:local .
+docker pull postgres:16-alpine
+```
+
+The worker resolves both image references to immutable local image IDs for each
+run and uses `--pull never` for execution. Build the verifier image from a trusted
+checkout, not the incoming PR. Custom database images must retain PostgreSQL 16
+Alpine's UID/GID 70 layout. The runtime supports the controlled instrumented
+payment target contract; it does not install dependencies or run repository scripts.
+
+Copy `configs/github-worker.example.json` to an operator-managed policy file.
+Replace the sample installation ID and zero SHA with the reviewed PR's full head
+SHA. The repository ID/name, adapter path, and source package must match your
+controlled target. `config_path` selects the trusted invariant configuration and
+resolves relative to the policy file, not the PR checkout. Keep this policy outside
+PR control; approval is a local policy entry, not a label or message in a PR.
+
+Set credentials only in the worker host environment:
+
+```sh
+export CHANGEPROOF_GITHUB_APP_ID='YOUR_APP_ID'
+export CHANGEPROOF_GITHUB_PRIVATE_KEY_PATH='/absolute/path/to/app-private-key.pem'
+changeproof github-worker --policy ./configs/github-worker.local.json --database ./work/github-jobs.sqlite3 --reports ./reports/github
+```
+
+One invocation handles at most one job; `--watch` polls continuously. It returns
+0 for idle/completed/skipped work and 2 for a retryable or terminal worker failure.
+A reproduced violation is a completed job with a failing Check, not a worker crash.
+If intake runs in Compose, point the host worker at the same queue using a host
+bind-mounted queue directory instead of the default Docker-only named volume.
+Never copy a live SQLite file without its WAL; both processes should use the same
+local disk file. Keep the private key out of the image and source snapshot.
+
+The worker signs a short-lived RS256 App JWT and requests a repository-scoped
+installation token with Contents read, Pull requests read, and Checks write.
+It checks repository identity and fetches the PR's current base/head, draft/state,
+and same-repository identity. Stale or unapproved jobs never execute. It downloads
+the exact approved head SHA, accepts only the GitHub codeload redirect, and never
+forwards credentials to that redirect host. Archives are limited to 20 MB, 2,000
+entries, 100 MB extracted, and 5 MB per file; traversal, symlinks, hard links, and
+special files are rejected.
+
+Verification runs as UID 1000 with a read-only root/source/config, dropped
+capabilities, no-new-privileges, 1 CPU, 512 MiB memory, 128 PIDs, and bounded tmpfs.
+A separate disposable PostgreSQL container uses an internal Docker network with
+no published ports or internet route. No host/GitHub/model credentials are passed
+to the verifier. The database/network/containers are removed afterward. The
+verifier gets a writable output directory; artifact collection rejects links and
+bounds file counts and size. Runtime disk quotas are not enforced on that output
+directory, so this remains for reviewed controlled commits, not hostile hosted
+repositories. Docker is not a complete security boundary for arbitrary code.
+
+The default verifier deadline is 120 seconds (policy range 10–300), enforced by
+a container-local timeout as well as the host wait, with separate
+bounded database startup, Docker operations, archive transfer, and API calls.
+Jobs use atomic 30-minute leases, fencing expired owners from writes. Forced
+host termination can leave a disposable database/network behind; operators must
+remove such orphan resources. Crashed jobs
+are recoverable; transient failures use up to three attempts with bounded backoff.
+An interrupted final attempt is finalized as incomplete without another execution.
+Check creation uses a stable external job ID and recovers a remotely created Check
+after an interruption. Publication retries reuse the Check and saved evidence;
+a changed policy/configuration invalidates cached verification.
+
+Before publishing, the worker rechecks both PR revisions and its lease. A changed
+PR cancels the old Check. Complete campaigns with reproduced effects publish
+`failure`; complete campaigns without violations publish `success`, with the
+bounded-campaign limitation. Incomplete campaigns publish `action_required` and
+never success. Exhausted infrastructure failures also attempt an `action_required`
+conclusion. If GitHub is unreachable, the local job records failure; remote Check
+completion cannot be guaranteed until service recovers and an operator retries.
+
+Checks include counts, the tested base/head, a first-violation ledger/trace excerpt,
+and the saved regression test when present. Full JSON/Markdown and regression
+artifacts stay under the configured reports directory, grouped by job/attempt.
+Each report records GitHub revision metadata, trusted configuration fingerprint,
+and actual runtime image IDs. There is no public artifact server or upload service
+in this prototype. To replay an artifact, restore the recorded snapshot and mount
+it at `/source`, or update the saved script's target path for a local checkout.
+The worker currently runs the explicit template campaign; generated verification
+remains available through the separate local `verify --generated` command.
+
+Inspect job state, attempts, Check ID, and artifact location with `github-jobs`.
+After changing an approval or repairing infrastructure, explicitly requeue failed,
+skipped, or action-required work:
+
+```sh
+changeproof github-retry --database ./work/github-jobs.sqlite3 --job-id JOB_ID
+```
+
+Running or successfully completed jobs cannot be requeued by this command. It
+retains the Check ID and any usable evidence, while resetting retry counters.
+New PR revisions arrive as separate jobs. Repository/installation access is
+revalidated for every attempt; removal or revoked credentials prevent execution.
+
+For a live installation, create/install a GitHub App with pull-request events,
+Contents read, Pull requests read, Checks write, the intake HTTPS webhook URL,
+and the same webhook secret. Set the real installation binding and approved SHA
+in both intake/worker configuration. The implementation follows GitHub's
+[App JWT guidance](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app),
+[installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation),
+and [Checks API](https://docs.github.com/en/rest/checks/runs).
+
+Local tests cover real Docker verification of vulnerable and patched snapshots,
+plus mocked GitHub HTTP authentication/Check contracts, stale revisions, retries,
+lease recovery, and archive restrictions. A live installed-App PR Check remains
+unverified until real App credentials and an installation/deployment are provided.
