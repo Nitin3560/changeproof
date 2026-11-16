@@ -4,13 +4,15 @@ ChangeProof will detect and reproduce idempotency and duplicate-side-effect
 regressions in Python backend services. A suspicion is a candidate; a reproducible
 failing test is evidence.
 
-## Current status: Phase 2 complete
+## Current status: Phase 3, Part 1
 
 The local instrumented prototype is implemented: configuration, PostgreSQL payment
 benchmarks, deterministic campaigns, verification CLI, evidence, and reproduction
 tests. Python/Git analysis now feeds bounded generated campaigns, property-based
 search and shrinking, and optional validated model suggestions. Automatic
-instrumentation and arbitrary repository execution remain future work.
+instrumentation and arbitrary repository execution remain future work. GitHub
+webhook intake now persists allowlisted PR jobs; verification workers and GitHub
+Checks publication are the next part.
 A valid configuration does not mean a service passed verification.
 
 ## Setup
@@ -308,3 +310,100 @@ then applies local schema and campaign-policy validation. Refused, incomplete, o
 invalid output is an error. Model confidence never confirms a bug, and model text
 is never executed. Live calls require your credentials and were not part of the
 local benchmark; SDK request/response handling is tested with mock HTTP responses.
+
+## Two-part Phase 3 plan
+
+1. **GitHub App intake (implemented):** authenticate webhook deliveries, validate
+   installation/repository scope, normalize pull-request revisions, and persist
+   deduplicated jobs. Acceptance: valid events survive restarts, concurrent
+   redeliveries enqueue one job, and invalid signatures never queue work.
+2. **PR verification and Checks (next):** add GitHub App authentication, claim jobs
+   in a worker, confirm the PR still targets the queued revision, run bounded
+   verification for explicitly approved targets, and publish GitHub Checks with
+   evidence. Acceptance: an installed app completes a check on the correct PR
+   commit, handles retries/stale work, and never reports an incomplete run as passed.
+
+Part 1 is a local intake service. No GitHub App has been registered, installed,
+or deployed by these changes, and no jobs execute or publish Checks yet.
+
+## Run GitHub webhook intake
+
+For local Python use, install `python -m pip install -e '.[github]'`. Configure:
+
+- `CHANGEPROOF_GITHUB_WEBHOOK_SECRET`: a random secret of at least 32 characters.
+- `CHANGEPROOF_GITHUB_ALLOWLIST`: a JSON list of installation/repository bindings.
+  Each entry has `installation_id`, `id` (repository ID), and `full_name`.
+- `CHANGEPROOF_GITHUB_QUEUE_PATH`: SQLite file path, default `work/github-jobs.sqlite3`.
+
+For example, after replacing the installation ID with your app installation ID:
+
+```sh
+export CHANGEPROOF_GITHUB_WEBHOOK_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+export CHANGEPROOF_GITHUB_ALLOWLIST='[{"installation_id":123456,"id":1460578755,"full_name":"Nitin3560/changeproof"}]'
+uvicorn changeproof.github.app:create_app --factory --host 127.0.0.1 --port 8080
+```
+
+Keep the same secret when restarting and configure that value in your GitHub App.
+The service will not start with a missing/short secret or empty allowlist. It needs
+no GitHub token or private key in Part 1, because it makes no GitHub API calls.
+The allowlist IDs must match the authenticated payload, including the base repo;
+matching only a repository name is insufficient.
+
+Alternatively, with the environment variables exported:
+
+```sh
+docker compose --profile github up --build -d --wait github-intake
+docker compose --profile github exec github-intake changeproof github-jobs --database /data/github-jobs.sqlite3
+docker compose --profile github down
+```
+
+The intake profile requires no PostgreSQL service. It binds port 8080 to loopback
+and saves SQLite state in the `github-queue` Docker volume. `down` preserves that
+volume; `down -v` removes it. Use a persistent local disk for a non-Docker queue.
+The SQLite queue supports concurrent local processes, not multiple hosts sharing
+a network filesystem.
+
+`POST /github/webhooks` verifies HMAC-SHA256 over the exact raw bytes using the
+`X-Hub-Signature-256` header before parsing JSON. Bodies are capped at 1 MiB,
+including streamed requests. `X-GitHub-Delivery` must be a UUID; `X-GitHub-Event`
+selects the event type. Duplicate JSON keys and inconsistent PR identities are
+rejected. The receiver follows GitHub's
+[signature-validation guidance](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+and [quick acknowledgement/queue guidance](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks).
+
+Supported pull-request actions are `opened`, `synchronize`, `reopened`, and
+`ready_for_review`. Only open, non-draft PRs from the same allowlisted repository
+are queued. Forks, missing head repositories, drafts, other actions, and other
+events are acknowledged as ignored. Signed `ping` events are acknowledged too.
+GitHub may include additional fields; unused fields such as PR descriptions are
+not persisted. Repository names are normalized to lowercase. Commit SHAs must
+be full 40-character hexadecimal values.
+
+Successful acknowledgements return 202 with `outcome`, `job_id`, `reason`, and
+`duplicate`. Jobs are identified by installation, repository, PR number, and both
+base/head SHAs. The same delivery or the same revision pair does not add another
+job, even across restarts. A new head or base SHA creates a separate job. Delivery
+ID reuse with different content/event returns 409. Invalid signatures return 401,
+malformed payloads 422, oversized bodies 413, and unavailable storage 503 with a
+retry hint. Receipts and jobs commit in one SQLite transaction before acknowledgement.
+Only normalized job metadata and delivery hashes are stored, not raw payloads.
+
+Inspect the queue without starting a server:
+
+```sh
+changeproof github-jobs --database ./work/github-jobs.sqlite3 --limit 50
+```
+
+This command opens the existing database read-only. It prints JSON and returns 2
+if storage cannot be read. `GET /health` reports process liveness and intake-only
+mode; it does not promise database availability or successful verification.
+
+For later GitHub App setup, subscribe to pull-request events and use an HTTPS
+webhook URL ending in `/github/webhooks` with the configured secret. Pull-request
+read access is sufficient for intake; Check publication and checkout permissions
+will be addressed in Part 2. Do not treat an acknowledgement as a verification
+result. Queued events may arrive out of order, and closed/draft/installation
+lifecycle events do not cancel existing jobs in Part 1. The future worker must
+recheck installation access, PR readiness, and current SHAs before execution and
+publication. No webhook handler clones repositories, imports adapters, calls an
+LLM, runs tests, or sends GitHub comments.
