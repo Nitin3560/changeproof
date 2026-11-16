@@ -4,11 +4,11 @@ ChangeProof will detect and reproduce idempotency and duplicate-side-effect
 regressions in Python backend services. A suspicion is a candidate; a reproducible
 failing test is evidence.
 
-## Current status: Phase 1, Part 3
+## Current status: Phase 1 complete
 
-The package, invariant configuration, PostgreSQL-backed benchmark services, and
-deterministic sample campaigns are implemented. The main CLI validates configuration;
-local repository targeting and saved reports arrive in Part 4.
+The local instrumented prototype is implemented: configuration, PostgreSQL payment
+benchmarks, deterministic campaigns, verification CLI, evidence, and reproduction
+tests. Arbitrary repository analysis and automatic instrumentation are future work.
 A valid configuration does not mean a service passed verification.
 
 ## Setup
@@ -135,4 +135,52 @@ recorded effects remain a violation even when requests return HTTP errors.
 The Python `run_benchmark` API returns case results with request responses, charge
 records, and an ordered checkpoint trace. Traces capture the enforced lookup
 ordering and charge/save checkpoints; they are not a complete database schedule.
-Part 4 will save these results and produce reproduction artifacts and reports.
+The verify command saves these results and produces reproduction artifacts and reports.
+
+## Verify a local target and save evidence
+
+```sh
+docker compose --profile test run --build --rm -v ./reports:/app/reports tests changeproof verify --repo ./examples/payment_service/vulnerable --config ./configs/payment-idempotency.yaml --output ./reports/vulnerable
+docker compose --profile test run --rm -v ./reports:/app/reports tests changeproof verify --repo ./examples/payment_service/corrected --config ./configs/payment-idempotency.yaml --output ./reports/corrected
+```
+
+Each invocation creates a unique `run-*` directory with `report.json` and
+`report.md`. Reproduced violations also get `CP-001.json`, `CP-001.md`, and
+`CP-001-repro.py` (and subsequent IDs). JSON includes the configuration, adapter
+hash, actual charges, HTTP responses, and ordered checkpoint trace. Reports
+separate reproduced violations, no violation reproduced, and execution errors;
+an incomplete campaign is never reported as passing.
+
+A regression test uses the recorded scenario and request count with a fresh key.
+To replay in Docker, replace the path below with your saved run directory:
+
+```sh
+docker compose --profile test run --rm -v ./reports:/app/reports tests python /app/reports/vulnerable/run-REPLACE/CP-001-repro.py
+```
+
+The test fails with an assertion showing the duplicate charge count. It must not
+fail because a dependency or database is unavailable. For local Python execution,
+install `.[benchmark]`, set `DATABASE_URL`, and run the saved script. Target paths
+in saved scripts are absolute; replay in the same checkout/container layout, or
+edit the path after relocating the checkout. Replays use current source code, so
+a corrected implementation may make the saved regression test pass.
+
+`--repo` identifies a local directory exporting `changeproof_target.py`, not a
+remote Git URL. The adapter must export `VARIANT` (`vulnerable` or `corrected`)
+and `create_app(store, gateway_transport, hook)`, using the supplied store,
+fake gateway transport, and checkpoint hook. The sample adapters demonstrate
+this contract. Adapters are trusted Python code executed in the local process;
+this is not a sandbox for untrusted repositories.
+
+Each campaign creates and drops its own PostgreSQL schema, including on ordinary
+execution errors. The configured database user needs schema creation permissions.
+Evidence is copied into results before schema cleanup; there are no campaign
+charges left in the persistent demonstration services' ledger. Forced process
+termination may leave an unused `cp_*` schema requiring manual removal.
+Case keys are also unique. PostgreSQL connection, statement, and lock waits are
+bounded. The benchmark gateway has no real payment integration.
+
+The first milestone is complete for these instrumented targets. Passing results
+apply only to the configured bounded schedule. Crash recovery, external provider
+ambiguity, general FastAPI repository discovery, and AST/LLM analysis remain
+outside this prototype.
