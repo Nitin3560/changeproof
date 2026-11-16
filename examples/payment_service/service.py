@@ -9,7 +9,7 @@ from .models import PaymentRequest
 from .storage import Store
 
 
-def create_app(variant, store=None, gateway_transport=None, *, hook=None):
+def create_app(variant, store=None, gateway_transport=None, *, hook=None, amount_guarded=False):
     if variant not in {"vulnerable", "corrected"}:
         raise ValueError("Unknown service variant")
     store = store or Store()
@@ -39,7 +39,7 @@ def create_app(variant, store=None, gateway_transport=None, *, hook=None):
         if existing:
             return saved_result(existing, request)
 
-        if variant == "corrected":
+        if variant == "corrected" or (amount_guarded and request.amount < 1000):
             owner = await store.claim(variant, idempotency_key, request.account_id, request.amount)
             if not owner:
                 existing = await store.payment(variant, idempotency_key)
