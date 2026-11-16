@@ -8,3 +8,8 @@ work
 
 *.sqlite3*
 .env*
+
+*.pem
+*.key
+
+configs/github-worker.local.json

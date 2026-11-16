@@ -15,3 +15,8 @@ reports/
 *.sqlite3-wal
 .env.*
 !.env.example
+
+*.pem
+*.key
+
+configs/github-worker.local.json
