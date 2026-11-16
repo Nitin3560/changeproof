@@ -1,5 +1,5 @@
 def reproduction_source(repo, config, case):
-    count = len(case.responses)
+    count = case.input.get("request_count", len(case.responses))
     return f'''"""Replay the recorded schedule with a fresh key in a disposable database."""
 import asyncio
 import unittest
@@ -16,7 +16,8 @@ class ReproduceViolation(unittest.TestCase):
         target, _ = load_target({str(repo)!r})
         config = CampaignConfig.model_validate({config.model_dump()!r})
         scenario = Scenario({case.scenario!r}, str(uuid4()), {count!r},
-                            concurrent={case.scenario == "concurrent_duplicates"!r})
+                            concurrent={case.input.get("concurrent", case.scenario == "concurrent_duplicates")!r},
+                            amount={case.input.get("amount", 500)!r}, account_id={case.input.get("account_id", "A100")!r})
         results = asyncio.run(run_benchmark(config, target.VARIANT,
             app_factory=target.create_app, scenarios=[scenario]))
         result = results[0]

@@ -10,6 +10,8 @@ class Scenario:
     key: str
     request_count: int
     concurrent: bool = False
+    amount: int = 500
+    account_id: str = "A100"
 
 
 def generate(config: CampaignConfig):

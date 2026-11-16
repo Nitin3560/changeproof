@@ -13,6 +13,7 @@ class CaseResult:
     responses: list = field(default_factory=list)
     trace: list = field(default_factory=list)
     error: str | None = None
+    input: dict = field(default_factory=dict)
 
 
 async def run_case(client, scenario, read_effects, scheduler, *, endpoint="/payments", timeout=15):
@@ -26,7 +27,7 @@ async def run_case(client, scenario, read_effects, scheduler, *, endpoint="/paym
         try:
             scheduler.record("request_started", key=scenario.key)
             reply = await client.post(endpoint, headers={"Idempotency-Key": scenario.key},
-                                      json={"account_id": "A100", "amount": 500})
+                                      json={"account_id": scenario.account_id, "amount": scenario.amount})
             response = {"request_id": index, "status_code": reply.status_code,
                         "body": reply.json()}
             responses.append(response)
@@ -53,11 +54,14 @@ async def run_case(client, scenario, read_effects, scheduler, *, endpoint="/paym
             else:
                 status, error = "no_violation_reproduced", None
             return CaseResult(scenario.kind, scenario.key, status, effects, responses,
-                              scheduler.trace, error)
+                              scheduler.trace, error, {"amount": scenario.amount, "account_id": scenario.account_id,
+                                                      "request_count": scenario.request_count, "concurrent": scenario.concurrent})
     except Exception as exc:
         scheduler.record("execution_error", error=type(exc).__name__)
         return CaseResult(scenario.kind, scenario.key, "error", responses=responses,
-                          trace=scheduler.trace, error=f"{type(exc).__name__}: {exc}")
+                          trace=scheduler.trace, error=f"{type(exc).__name__}: {exc}",
+                          input={"amount": scenario.amount, "account_id": scenario.account_id,
+                                 "request_count": scenario.request_count, "concurrent": scenario.concurrent})
     finally:
         for task in tasks:
             if not task.done():
