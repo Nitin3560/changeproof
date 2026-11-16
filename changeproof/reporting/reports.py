@@ -10,12 +10,16 @@ from .reproduction import reproduction_source
 LIMITATION = "No violations reproduced does not prove correctness for all executions."
 
 
-def write_reports(output, config, target, results):
+def write_reports(output, config, target, results, *, generation=None):
     expected = config.scenarios.iterations * (1 + int(config.scenarios.sequential_duplicates)
                                              + int(config.scenarios.concurrent_duplicates))
+    if generation is not None:
+        expected = generation["expected_cases"]
     errors = sum(case.status == "error" for case in results)
     violations = [case for case in results if case.status == "violation"]
-    complete = len(results) == expected and not errors
+    complete = bool(results) and len(results) == expected and not errors
+    if generation is not None:
+        complete = complete and generation["complete"]
     status = "execution_error" if not complete else "violation_reproduced" if violations else "no_violation_reproduced"
     folder = Path(output) / f"run-{uuid4().hex}"
     folder.mkdir(parents=True)
@@ -38,7 +42,7 @@ def write_reports(output, config, target, results):
         findings.append({"id": finding_id, "observed_charges": len(case.effects), "reproduction": repro})
     report = {"schema_version": 1, "changeproof_version": __version__,
               "created_at": datetime.now(timezone.utc).isoformat(), "status": status,
-              "target": target, "configuration": config.model_dump(),
+              "target": target, "configuration": config.model_dump(), "generation": generation,
               "campaign": {"expected_cases": expected, "completed_cases": len(results),
                            "complete": complete, "errors": errors, "violations": len(violations)},
               "findings": findings, "cases": [asdict(case) for case in results],

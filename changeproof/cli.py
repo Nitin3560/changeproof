@@ -16,6 +16,14 @@ def main(argv=None) -> int:
     verify.add_argument("--repo", required=True)
     verify.add_argument("--config", required=True)
     verify.add_argument("--output", default="reports")
+    verify.add_argument("--base", help="Git revision for generated scenario analysis")
+    verify.add_argument("--generated", action="store_true", help="Search and shrink generated payment inputs")
+    verify.add_argument("--analysis-root", help="Source directory to analyze (defaults to target directory)")
+    verify.add_argument("--max-examples", type=int, choices=range(1, 101), default=30, metavar="1..100")
+    verify.add_argument("--seed", type=int, default=0)
+    suggestions = verify.add_mutually_exclusive_group()
+    suggestions.add_argument("--suggestions", help="Validated JSON candidate suggestions")
+    suggestions.add_argument("--llm-model", help="Explicit OpenAI model for optional candidate suggestions")
     analyze = commands.add_parser("analyze", help="Inspect Python source without executing it")
     analyze.add_argument("--repo", required=True)
     analyze.add_argument("--config", required=True)
@@ -46,9 +54,25 @@ def verify_target(args, config):
         print("Install benchmark dependencies: pip install -e '.[benchmark]'", file=sys.stderr)
         return 2
     try:
+        if (args.suggestions or args.llm_model or args.analysis_root or args.base) and not args.generated:
+            raise ValueError("Analysis and suggestion options require --generated")
         target, metadata = load_target(args.repo)
-        results = asyncio.run(run_benchmark(config, target.VARIANT, app_factory=target.create_app))
-        report, folder = write_reports(args.output, config, metadata, results)
+        generation = None
+        if args.generated:
+            from .analyzer.repository import analyze_repository
+            from .scenarios.suggestions import SuggestionBatch, load_suggestions, suggest_with_model
+            from .execution.generated import run_generated
+            analysis = analyze_repository(args.analysis_root or args.repo, config, base=args.base)
+            if analysis["diagnostics"]:
+                raise ValueError("Source analysis is incomplete; inspect it with changeproof analyze")
+            batch = (load_suggestions(args.suggestions, config) if args.suggestions else
+                     suggest_with_model(analysis, config, args.llm_model) if args.llm_model else
+                     SuggestionBatch(suggestions=[]))
+            results, generation = run_generated(config, target, analysis, batch,
+                                                max_examples=args.max_examples, seed=args.seed)
+        else:
+            results = asyncio.run(run_benchmark(config, target.VARIANT, app_factory=target.create_app))
+        report, folder = write_reports(args.output, config, metadata, results, generation=generation)
     except Exception as exc:
         print(f"Verification error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
