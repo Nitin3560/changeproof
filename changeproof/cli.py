@@ -29,7 +29,12 @@ def main(argv=None) -> int:
     analyze.add_argument("--config", required=True)
     analyze.add_argument("--base", help="Git revision to compare with the current worktree")
     analyze.add_argument("--output", help="Write analysis JSON to this file")
+    jobs = commands.add_parser("github-jobs", help="Inspect queued GitHub jobs without modifying them")
+    jobs.add_argument("--database", required=True)
+    jobs.add_argument("--limit", type=int, choices=range(1, 101), default=50, metavar="1..100")
     args = parser.parse_args(argv)
+    if args.command == "github-jobs":
+        return inspect_jobs(args)
     try:
         config = load_config(args.config)
     except ConfigurationError as exc:
@@ -103,3 +108,15 @@ def analyze_target(args, config):
         print(f"Analysis error: {exc}", file=sys.stderr)
         return 2
     return 2 if report["diagnostics"] else 0
+
+
+def inspect_jobs(args):
+    import sqlite3
+    from .github.queue import list_jobs
+
+    try:
+        print(json.dumps({"jobs": list_jobs(args.database, args.limit)}, indent=2))
+    except (OSError, ValueError, sqlite3.Error):
+        print("Could not read the GitHub job database", file=sys.stderr)
+        return 2
+    return 0
