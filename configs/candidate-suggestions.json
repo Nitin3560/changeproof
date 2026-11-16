@@ -1,0 +1,16 @@
+{
+  "suggestions": [
+    {
+      "hypothesis": "A value-dependent branch may bypass the idempotency claim",
+      "function": "create_app.payment",
+      "confidence": "candidate",
+      "scenario": {
+        "type": "concurrent_duplicates",
+        "request_count": 2,
+        "amount": 1500,
+        "account_id": "A100",
+        "synchronization_point": "after_key_lookup"
+      }
+    }
+  ]
+}
