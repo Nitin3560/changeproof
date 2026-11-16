@@ -9,3 +9,9 @@ reports/
 .pytest_cache/
 
 .hypothesis/
+
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+.env.*
+!.env.example

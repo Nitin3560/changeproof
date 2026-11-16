@@ -5,3 +5,6 @@ reports
 work
 
 .hypothesis
+
+*.sqlite3*
+.env*

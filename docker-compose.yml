@@ -53,6 +53,22 @@ services:
       gateway:
         condition: service_healthy
 
+  github-intake:
+    build: .
+    profiles: ["github"]
+    command: ["uvicorn", "changeproof.github.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      CHANGEPROOF_GITHUB_WEBHOOK_SECRET: ${CHANGEPROOF_GITHUB_WEBHOOK_SECRET:-}
+      CHANGEPROOF_GITHUB_ALLOWLIST: ${CHANGEPROOF_GITHUB_ALLOWLIST:-[]}
+      CHANGEPROOF_GITHUB_QUEUE_PATH: /data/github-jobs.sqlite3
+    ports: ["127.0.0.1:8080:8000"]
+    volumes: ["github-queue:/data"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   tests:
     <<: *service
     profiles: ["test"]
@@ -61,3 +77,4 @@ services:
 
 volumes:
   benchmark-data:
+  github-queue:
