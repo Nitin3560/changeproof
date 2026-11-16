@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "changeproof"
+version = "0.1.0"
+description = "Reproducible evidence for backend behavioral regressions"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7"]
+
+[project.scripts]
+changeproof = "changeproof.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["changeproof*"]
