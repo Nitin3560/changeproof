@@ -1,0 +1,63 @@
+name: changeproof-benchmark
+x-service: &service
+  build: .
+  environment: &environment
+    DATABASE_URL: postgresql://changeproof:changeproof@postgres:5432/changeproof
+    GATEWAY_URL: http://gateway:8000
+  depends_on:
+    postgres:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: changeproof
+      POSTGRES_PASSWORD: changeproof
+      POSTGRES_DB: changeproof
+    volumes:
+      - benchmark-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U changeproof"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  gateway:
+    <<: *service
+    command: ["uvicorn", "examples.payment_service.fake_gateway.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["127.0.0.1:8002:8000"]
+
+  vulnerable:
+    <<: *service
+    command: ["uvicorn", "examples.payment_service.vulnerable.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+
+  corrected:
+    <<: *service
+    command: ["uvicorn", "examples.payment_service.corrected.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["127.0.0.1:8001:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+
+  tests:
+    <<: *service
+    profiles: ["test"]
+    volumes: ["./tests:/app/tests:ro"]
+    command: ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+
+volumes:
+  benchmark-data:
