@@ -1,0 +1,16 @@
+{
+  "targets": [
+    {
+      "installation_id": 123456,
+      "id": 1460578755,
+      "full_name": "Nitin3560/changeproof",
+      "approved_heads": ["0000000000000000000000000000000000000000"],
+      "adapter_path": "examples/payment_service/vulnerable",
+      "source_package": "examples",
+      "config_path": "payment-idempotency.yaml"
+    }
+  ],
+  "runtime_image": "changeproof-worker:local",
+  "database_image": "postgres:16-alpine",
+  "timeout_seconds": 120
+}
