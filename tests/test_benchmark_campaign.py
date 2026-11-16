@@ -40,3 +40,37 @@ class BenchmarkCampaignTests(IsolatedAsyncioTestCase):
                             self.assertEqual(len(lookups), request_count)
                             self.assertLess(max(lookups), min(charges))
                             self.assertEqual(len(charges), expected_count)
+
+    async def test_cli_reports_and_generated_regression(self):
+        import asyncio
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        import yaml
+
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            data = yaml.safe_load((root / "configs/payment-idempotency.yaml").read_text())
+            data["scenarios"].update(iterations=1, concurrent_requests=2)
+            config = directory / "config.yaml"
+            config.write_text(yaml.safe_dump(data))
+            for variant, code in (("vulnerable", 1), ("corrected", 0)):
+                output = directory / variant
+                command = [sys.executable, "-m", "changeproof", "verify", "--repo",
+                           str(root / "examples/payment_service" / variant), "--config", str(config),
+                           "--output", str(output)]
+                result = await asyncio.to_thread(subprocess.run, command, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                report_file = next(output.glob("run-*/report.json"))
+                report = json.loads(report_file.read_text())
+                self.assertTrue(report["campaign"]["complete"])
+                self.assertEqual(report["campaign"]["violations"], 1 if variant == "vulnerable" else 0)
+                if variant == "vulnerable":
+                    script = report_file.parent / "CP-001-repro.py"
+                    replay = await asyncio.to_thread(subprocess.run, [sys.executable, str(script)],
+                        capture_output=True, text=True, timeout=30)
+                    self.assertEqual(replay.returncode, 1, replay.stdout + replay.stderr)
+                    self.assertIn("Duplicate charges: 2", replay.stderr)
+                    self.assertNotIn("ERROR:", replay.stderr)
