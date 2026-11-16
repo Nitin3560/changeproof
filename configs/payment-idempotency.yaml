@@ -1,0 +1,17 @@
+service:
+  name: payment-service
+  endpoint: /payments
+  method: POST
+
+invariants:
+  - id: payment-idempotency
+    type: unique-side-effect
+    key: idempotency_key
+    effect: payment_charge
+    max_occurrences: 1
+
+scenarios:
+  sequential_duplicates: true
+  concurrent_duplicates: true
+  concurrent_requests: 10
+  iterations: 100
