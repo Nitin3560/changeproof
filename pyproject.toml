@@ -9,8 +9,11 @@ description = "Reproducible evidence for backend behavioral regressions"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7"]
 
+[project.optional-dependencies]
+benchmark = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "psycopg[binary]>=3.2,<4", "httpx>=0.27,<1"]
+
 [project.scripts]
 changeproof = "changeproof.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["changeproof*"]
+include = ["changeproof*", "examples*"]
