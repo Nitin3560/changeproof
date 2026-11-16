@@ -32,7 +32,19 @@ def main(argv=None) -> int:
     jobs = commands.add_parser("github-jobs", help="Inspect queued GitHub jobs without modifying them")
     jobs.add_argument("--database", required=True)
     jobs.add_argument("--limit", type=int, choices=range(1, 101), default=50, metavar="1..100")
+    worker = commands.add_parser("github-worker", help="Process an approved GitHub verification job")
+    worker.add_argument("--policy", required=True)
+    worker.add_argument("--database", default="work/github-jobs.sqlite3")
+    worker.add_argument("--reports", default="reports/github")
+    worker.add_argument("--watch", action="store_true", help="Poll for more jobs after each attempt")
+    retry = commands.add_parser("github-retry", help="Requeue a skipped or failed GitHub job")
+    retry.add_argument("--database", required=True)
+    retry.add_argument("--job-id", required=True)
     args = parser.parse_args(argv)
+    if args.command == "github-retry":
+        return retry_job(args)
+    if args.command == "github-worker":
+        return run_worker(args)
     if args.command == "github-jobs":
         return inspect_jobs(args)
     try:
@@ -119,4 +131,46 @@ def inspect_jobs(args):
     except (OSError, ValueError, sqlite3.Error):
         print("Could not read the GitHub job database", file=sys.stderr)
         return 2
+    return 0
+
+
+def run_worker(args):
+    import time
+
+    try:
+        from .github.client import GitHubClient
+        from .github.executor import DockerExecutor
+        from .github.queue import JobStore
+        from .github.worker import process_one
+        from .github.worker_settings import WorkerPolicy, app_credentials
+        policy = WorkerPolicy.load(args.policy)
+        app_id, key = app_credentials()
+        client = GitHubClient(app_id, key)
+        store = JobStore(args.database)
+        try:
+            while True:
+                result = process_one(store, policy, client, DockerExecutor(), args.reports)
+                print(json.dumps(result), flush=True)
+                if not args.watch:
+                    return 2 if result["status"] in {"retry", "failed"} else 0
+                if result["status"] in {"idle", "retry"}:
+                    time.sleep(5)
+        finally:
+            client.close()
+    except Exception as exc:
+        print(f"GitHub worker error: {type(exc).__name__}", file=sys.stderr)
+        return 2
+
+
+def retry_job(args):
+    from pathlib import Path
+    from .github.queue import JobStore
+
+    try:
+        if not Path(args.database).is_file() or not JobStore(args.database).retry(args.job_id):
+            raise ValueError("Job is not retryable")
+    except Exception:
+        print("Could not requeue this job", file=sys.stderr)
+        return 2
+    print(json.dumps({"job_id": args.job_id, "state": "queued"}))
     return 0
