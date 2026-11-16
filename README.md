@@ -4,12 +4,13 @@ ChangeProof will detect and reproduce idempotency and duplicate-side-effect
 regressions in Python backend services. A suspicion is a candidate; a reproducible
 failing test is evidence.
 
-## Current status: Phase 2, Part 1
+## Current status: Phase 2 complete
 
 The local instrumented prototype is implemented: configuration, PostgreSQL payment
 benchmarks, deterministic campaigns, verification CLI, evidence, and reproduction
-tests. Static Python and Git analysis now identifies candidate race windows.
-Automatic instrumentation and analysis-driven scenarios are future work.
+tests. Python/Git analysis now feeds bounded generated campaigns, property-based
+search and shrinking, and optional validated model suggestions. Automatic
+instrumentation and arbitrary repository execution remain future work.
 A valid configuration does not mean a service passed verification.
 
 ## Setup
@@ -183,7 +184,7 @@ bounded. The benchmark gateway has no real payment integration.
 
 The first milestone is complete for these instrumented targets. Passing results
 apply only to the configured bounded schedule. Crash recovery, external provider
-ambiguity, automatic repository instrumentation, and LLM-generated scenarios remain
+ambiguity, automatic repository instrumentation, and multi-service workflows remain
 outside this prototype.
 
 ## Two-part Phase 2 plan
@@ -193,14 +194,14 @@ outside this prototype.
    candidate read/branch/charge/write patterns with source locations and scenario
    recommendations. Acceptance: inspect source without executing it, narrow to
    changed functions, and keep every static finding unconfirmed.
-2. **Targeted scenario generation (next):** connect analysis to the verifier,
+2. **Targeted scenario generation (implemented):** connect analysis to the verifier,
    introduce property-based input/action generation, validate LLM-proposed
    hypotheses and scenarios against a bounded schema, and benchmark failures beyond
    the current templates. Acceptance: an independently reproduced defect requiring
    generated inputs or actions, with evidence and a runnable regression test.
 
-Part 1 does not invoke an LLM or generate property-based campaigns. Those belong
-to Part 2, where candidate suggestions must never change the explicit oracle.
+Part 1 supplies source facts. Part 2 turns candidates and optional suggestions
+into tests; suggestions cannot change the explicit oracle.
 
 ## Analyze source without running it
 
@@ -223,8 +224,8 @@ empty successful report. The Git executable must be installed for this mode.
 JSON includes function/decorator locations, literal route mappings, assignments,
 ordered calls, conditions, exception handlers, lexical and `self`/`cls` call
 links within a file, and candidate race windows. Candidates recommend two
-concurrent requests at `after_key_lookup`; execution and report linking are still
-separate operations. The analyzer does not add hooks to target code.
+concurrent requests at `after_key_lookup`; the generated verification mode executes these probes and links the analysis
+to reports. The analyzer does not add hooks to target code.
 
 A candidate requires a recognized read, a conditional, a charge call, and a later
 write in one function. Charge names and literal `post("/charges")` calls are
@@ -241,3 +242,69 @@ even with candidates, and 2 for invalid input, Git errors, or incomplete parsing
 Syntax/encoding/read errors are included in `diagnostics` and mark the report
 incomplete. Files over 1 MB are reported as incomplete; scans over 1,000 Python
 files are rejected. Symlinks and common dependency/build directories are skipped.
+
+## Search generated inputs and shrink counterexamples
+
+Install `python -m pip install -e '.[benchmark,generation]'` for local use.
+The Docker test image includes all optional dependencies.
+
+```sh
+docker compose --profile test run --build --rm -v ./reports:/app/reports tests changeproof verify --generated --repo ./examples/payment_service/amount_sensitive --analysis-root ./examples/payment_service --config ./configs/payment-idempotency.yaml --max-examples 30 --seed 0 --output ./reports/generated
+```
+
+The amount-sensitive benchmark deliberately claims keys only for amounts below
+1000. The original templates always send 500, so they miss this defect. Generated
+verification discovers and shrinks a duplicate-charge counterexample to two
+concurrent requests at amount 1000, then independently replays it with a fresh key.
+Run the same command with `--repo ./examples/payment_service/corrected` as a control.
+Saved regression tests preserve the exact generated amount, account ID, duplicate
+count, and schedule; they need no model to replay.
+
+Static candidates add a two-request concurrent probe when enabled. Hypothesis then
+searches amounts 1–2000, alphanumeric account IDs of 1–12 characters, sequential
+repeats of 2–10 requests, and concurrent repeats of 2–min(10, configured bound).
+Only configured scenario types are explored. `--analysis-root` defaults to the
+adapter directory; point it at shared source to include the payment handler.
+Optional `--base REV` restricts analysis to Git changes. An empty candidate set
+still permits property search; incomplete analysis prevents generated execution.
+
+Generated mode uses `--max-examples` (1–100, default 30), not the template iteration
+count. Shrinking and probes add executions beyond this search budget, capped at
+min(500, max(50, 5 × max-examples)) total executions. Exceeding that cap is an
+execution error and incomplete campaign, never a passing search. Each case keeps
+its existing timeout and disposable schema. Search stops after a shrunk
+counterexample; otherwise reports say no counterexample was found within budget.
+A seed helps repeat the search, but package versions and source changes can alter
+Hypothesis exploration. Saved concrete replays do not depend on that exploration.
+
+Reports include analysis, suggestion provenance, seed, budgets, search outcome,
+minimized input, and each executed input. There may be several violations from
+search and shrinking; the last finding replays the independently checked minimized
+case when `search_status` is `counterexample_found`. Passing these synthetic
+benchmarks does not establish real-world accuracy or correctness.
+
+## Optional model suggestions
+
+No API call is made by default. To use an existing model-produced JSON file:
+
+```sh
+changeproof verify --generated --repo ./examples/payment_service/amount_sensitive --analysis-root ./examples/payment_service --config ./configs/payment-idempotency.yaml --suggestions ./configs/candidate-suggestions.json --output ./reports/suggested
+```
+
+The checked-in file is a hand-written format example, not evidence of a model run.
+Its schema permits at most ten candidate hypotheses and only supported duplicate
+scenarios, bounded inputs, and the known lookup checkpoint. Unknown fields, shell
+commands, invariant overrides, unsupported hooks, confirmed labels, and bounds
+exceeding configuration are rejected. Accepted hypotheses stay unconfirmed until
+actual gateway effects reproduce a violation.
+
+For optional live suggestions, install `.[benchmark,generation,llm]`, set
+`OPENAI_API_KEY`, and replace `--suggestions ...` with `--llm-model MODEL_NAME`.
+Choose a model supporting structured outputs. This explicit option sends bounded
+analysis facts (including conditions and call names) to OpenAI. The client has a
+30-second timeout, no automatic retries, no tools, and `store=False`. It uses the
+[Responses structured-output API](https://developers.openai.com/api/docs/guides/structured-outputs),
+then applies local schema and campaign-policy validation. Refused, incomplete, or
+invalid output is an error. Model confidence never confirms a bug, and model text
+is never executed. Live calls require your credentials and were not part of the
+local benchmark; SDK request/response handling is tested with mock HTTP responses.
