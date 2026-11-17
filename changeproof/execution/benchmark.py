@@ -7,6 +7,7 @@ from examples.payment_service.service import create_app
 from examples.payment_service.storage import Store
 
 from .runner import run_case
+from .faults import FaultController
 from .scheduler import Scheduler
 from .sandbox import isolated_database
 
@@ -31,16 +32,19 @@ async def _run_campaign(config, variant, *, dsn, timeout, app_factory, scenarios
     results = []
     for scenario in (generate(config) if scenarios is None else scenarios):
         scheduler = Scheduler(scenario.request_count if scenario.concurrent else 1)
-        app = (app_factory(store, gateway, scheduler) if app_factory else
-               create_app(variant, store, gateway, hook=scheduler))
+        faults = FaultController(scenario, store, variant, scheduler, gateway) if scenario.fault else None
+        target_store = faults.store if faults else store
+        transport = faults.transport if faults else gateway
+        app = (app_factory(target_store, transport, scheduler) if app_factory else
+               create_app(variant, target_store, transport, hook=scheduler))
 
         async def read_effects(key):
             return await store.charges(variant, key)
 
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
                                      base_url="http://benchmark") as client:
             result = await run_case(client, scenario, read_effects, scheduler,
-                                    endpoint=config.service.endpoint, timeout=timeout)
+                                    endpoint=config.service.endpoint, timeout=timeout, faults=faults)
         results.append(result)
         if result.status == "error":
             break
@@ -66,12 +70,12 @@ def main(argv=None):
         return 2
     counts = Counter(result.status for result in results)
     print(f"{args.variant}: {len(results)} cases, {counts['violation']} violations, "
-          f"{counts['error']} errors")
+          f"{counts['error']} errors, {counts['inconclusive']} inconclusive")
     for result in results:
         if result.error:
             print(result.error)
     print("Passing a bounded campaign does not prove correctness for all executions.")
-    return 2 if counts["error"] else 1 if counts["violation"] else 0
+    return 2 if counts["error"] else 1 if counts["violation"] else 2 if counts["inconclusive"] else 0
 
 
 if __name__ == "__main__":
