@@ -36,7 +36,7 @@ def run_generated(config, target, analysis, suggestions, *, max_examples=30, see
             result = runner.run(run_benchmark(config, target.VARIANT, dsn=dsn,
                                 app_factory=target.create_app, scenarios=[scenario]))[0]
             results.append(result)
-            if result.status == "error":
+            if result.status in {"error", "inconclusive"}:
                 raise CampaignError(result.error)
             return result
 

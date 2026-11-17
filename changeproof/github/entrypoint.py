@@ -36,7 +36,7 @@ def main():
     config = load_config("/policy/config.yaml")
     results = asyncio.run(run_benchmark(config, target.VARIANT, app_factory=target.create_app))
     report, _ = write_reports("/out", config, metadata, results)
-    return 2 if report["status"] == "execution_error" else 1 if report["campaign"]["violations"] else 0
+    return 2 if report["status"] in {"execution_error", "inconclusive"} else 1 if report["campaign"]["violations"] else 0
 
 
 if __name__ == "__main__":

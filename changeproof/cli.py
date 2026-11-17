@@ -95,10 +95,11 @@ def verify_target(args, config):
         return 2
     summary = report["campaign"]
     print(f"{report['status']}: {summary['completed_cases']} cases, "
-          f"{summary['violations']} violations, {summary['errors']} errors")
+          f"{summary['violations']} violations, {summary['errors']} errors, "
+          f"{summary.get('inconclusive', 0)} inconclusive")
     print(f"Reports: {folder / 'report.json'} and {folder / 'report.md'}")
     print("No violations reproduced does not prove correctness for all executions.")
-    return 2 if report["status"] == "execution_error" else 1 if summary["violations"] else 0
+    return 2 if report["status"] in {"execution_error", "inconclusive"} else 1 if summary["violations"] else 0
 
 
 def analyze_target(args, config):

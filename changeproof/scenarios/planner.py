@@ -28,6 +28,9 @@ def input_strategy(config):
     if config.scenarios.concurrent_duplicates:
         kinds.append("concurrent_duplicates")
 
+    if not kinds:
+        raise ValueError("Generated search requires sequential or concurrent duplicates; use template mode for fault campaigns")
+
     @st.composite
     def inputs(draw):
         kind = draw(st.sampled_from(kinds))
