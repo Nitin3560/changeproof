@@ -4,7 +4,7 @@ ChangeProof will detect and reproduce idempotency and duplicate-side-effect
 regressions in Python backend services. A suspicion is a candidate; a reproducible
 failing test is evidence.
 
-## Current status: Phase 3 code implemented; live App setup pending
+## Current status: Phase 4, Part 1; live App setup pending
 
 The local instrumented prototype is implemented: configuration, PostgreSQL payment
 benchmarks, deterministic campaigns, verification CLI, evidence, and reproduction
@@ -13,7 +13,8 @@ search and shrinking, and optional validated model suggestions. Automatic
 instrumentation and arbitrary repository execution remain future work. GitHub
 webhook intake persists allowlisted PR jobs, and an isolated worker can verify
 approved snapshots and publish GitHub Checks. Live App registration, installation,
-and deployment still require operator configuration.
+and deployment still require operator configuration. Deterministic retry/fault
+campaigns now distinguish duplicate charges from unresolved payment outcomes.
 A valid configuration does not mean a service passed verification.
 
 ## Setup
@@ -522,3 +523,96 @@ Local tests cover real Docker verification of vulnerable and patched snapshots,
 plus mocked GitHub HTTP authentication/Check contracts, stale revisions, retries,
 lease recovery, and archive restrictions. A live installed-App PR Check remains
 unverified until real App credentials and an installation/deployment are provided.
+
+## Two-part Phase 4 plan
+
+1. **Retries and uncertain outcomes (implemented):** inject a timeout before a
+   charge, lose a response after a charge commits, and fail before payment state is
+   saved. Retry the same key, collect durable effects and payment state, and replay
+   confirmed violations. Acceptance: repeated campaigns expose duplicate effects
+   in the vulnerable service, while unresolved corrected payments stay inconclusive.
+2. **Recovery across processes and services (next):** model real process
+   interruption/restart, durable operation recovery and provider idempotency, then
+   message-driven and multi-service workflows. Acceptance: independently reproduced
+   recovery defects and a control that completes safely after those failures.
+
+The scope of Part 1 is transport/storage fault simulation in the instrumented
+sample. It does not implement a production recovery protocol or claim that a
+reserved payment will eventually complete.
+
+## Run the retry fault campaign
+
+```sh
+docker compose --profile test run --build --rm -v ./reports:/app/reports tests changeproof verify --repo ./examples/payment_service/vulnerable --config ./configs/payment-retries.yaml --output ./reports/retries-vulnerable
+docker compose --profile test run --rm -v ./reports:/app/reports tests changeproof verify --repo ./examples/payment_service/corrected --config ./configs/payment-retries.yaml --output ./reports/retries-corrected
+```
+
+The new flags live under `scenarios`. All default to false, so existing campaigns
+still run the original cases. `retry_attempts` is the number of additional attempts,
+between 1 and 5 (default 2). Each retry case sends 2–6 sequential requests with the
+same key and payload, injecting one fault on the first relevant operation only.
+The original case deadline also covers the injected operation and all retries.
+
+| Scenario | Injection | Observed effects at injection |
+| --- | --- | --- |
+| `timeout_before_charge` | Raise a transport timeout before calling the fake gateway | 0 |
+| `timeout_after_charge` | Call the real fake gateway, wait for its durable charge commit, then lose the response | 1 |
+| `failure_before_save` | Charge successfully, then raise before saving the payment result | 1 |
+
+Faults are injected through the supplied test transport and store, not through a
+public HTTP parameter or a production service setting. No random sleeps are used.
+The fault controller queries PostgreSQL to record actual effects at the injection
+point. Each case also records gateway calls, individual responses, final durable
+charges, and whether payment state is absent, reserved, or completed. An adapter
+that bypasses the fault point produces an execution error rather than a passing
+fault test. Unavailable ledgers, missed deadlines, and unexpected response sequences
+also remain execution errors. If the service handles the injected failure internally,
+a 200 response is accepted only when a single effect and completed durable payment
+state are observed. The tests include a control that retries a failed local save
+without charging again.
+
+The checked-in configuration runs five iterations of one valid payment plus three
+fault cases: 20 cases per service. Expected results:
+
+- **Vulnerable:** 10 reproduced duplicate-charge violations, no execution errors.
+  A timeout before charging recovers without duplicates; losing an already-committed
+  charge response or failing before saving creates a second charge on retry.
+- **Corrected:** no duplicate charges, but 15 inconclusive payments and 5 completed
+  valid payments. The atomic claim prevents another charge; retries receive 409
+  while the outcome remains unresolved. A timeout before charging can leave a
+  reserved payment with zero charges, illustrating that safety alone is insufficient.
+
+These expected outcomes are bounded benchmark behavior, not production guarantees.
+The original corrected sample deliberately keeps uncertain claims reserved; Part 2
+will address durable recovery rather than silently releasing those claims.
+
+## Interpret unresolved outcomes
+
+A case is `inconclusive` when the scheduled fault occurred and retries did not
+complete the payment, while the ledger shows at most one charge. Reports include
+an unresolved-payment section and `campaign.inconclusive`. `campaign.complete`
+means the scheduled execution finished, not that every payment recovered. No
+reproduced duplicates plus unresolved payments produces report status
+`inconclusive`, CLI exit 2, and GitHub Check `action_required`, never success.
+A valid reproduced duplicate remains a failing finding even if another case is
+inconclusive. Infrastructure errors produce `execution_error` instead.
+
+Confirmed findings retain the fault point and exact input in their regression
+scripts. Replaying injects that fault again and asserts the durable charge bound;
+unresolved or execution-error replays raise an error instead of silently passing.
+The vulnerable retry findings replay as two-charge assertion failures. Reports
+contain full ledger rows at the fault and at campaign completion, so HTTP error
+responses cannot hide committed effects.
+
+The GitHub worker's trusted config can select this campaign, provided its runtime
+image is rebuilt from the updated trusted source. It propagates inconclusive
+outcomes to Checks without rerunning them as infrastructure failures. Live App
+registration/installation remains a separate pending setup step. Generated search
+and model suggestions still target the original duplicate-input scenarios; use
+normal template mode for these fault campaigns. A fault-only configuration with
+`--generated` is rejected rather than treated as an empty successful search.
+
+These failures are deliberate exceptions at known points. They do not simulate
+an actual killed process, database outage, network partition, real payment
+provider, lost broker acknowledgement, or recovery after restart. Those behaviors
+belong to Part 2 and require additional durable protocols and independent controls.
