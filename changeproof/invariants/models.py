@@ -29,11 +29,16 @@ class Scenarios(StrictModel):
     concurrent_duplicates: bool = True
     concurrent_requests: Annotated[int, Field(ge=2, le=100)] = 10
     iterations: Annotated[int, Field(ge=1, le=1000)] = 100
+    timeout_before_charge: bool = False
+    timeout_after_charge: bool = False
+    failure_before_save: bool = False
+    retry_attempts: Annotated[int, Field(ge=1, le=5)] = 2
 
     @model_validator(mode="after")
     def enabled_scenario(self):
-        if not (self.sequential_duplicates or self.concurrent_duplicates):
-            raise ValueError("Enable at least one duplicate-request scenario")
+        if not (self.sequential_duplicates or self.concurrent_duplicates or self.timeout_before_charge
+                or self.timeout_after_charge or self.failure_before_save):
+            raise ValueError("Enable at least one duplicate or retry scenario")
         return self
 
 
