@@ -5,22 +5,23 @@ from pathlib import Path
 from uuid import uuid4
 
 from changeproof import __version__
+from changeproof.scenarios.generator import expected_cases
 from .reproduction import reproduction_source
 
 LIMITATION = "No violations reproduced does not prove correctness for all executions."
 
 
 def write_reports(output, config, target, results, *, generation=None):
-    expected = config.scenarios.iterations * (1 + int(config.scenarios.sequential_duplicates)
-                                             + int(config.scenarios.concurrent_duplicates))
+    expected = expected_cases(config)
     if generation is not None:
         expected = generation["expected_cases"]
     errors = sum(case.status == "error" for case in results)
     violations = [case for case in results if case.status == "violation"]
+    inconclusive = [case for case in results if case.status == "inconclusive"]
     complete = bool(results) and len(results) == expected and not errors
     if generation is not None:
         complete = complete and generation["complete"]
-    status = "execution_error" if not complete else "violation_reproduced" if violations else "no_violation_reproduced"
+    status = "execution_error" if not complete else "violation_reproduced" if violations else "inconclusive" if inconclusive else "no_violation_reproduced"
     folder = Path(output) / f"run-{uuid4().hex}"
     folder.mkdir(parents=True)
     findings = []
@@ -44,17 +45,25 @@ def write_reports(output, config, target, results, *, generation=None):
               "created_at": datetime.now(timezone.utc).isoformat(), "status": status,
               "target": target, "configuration": config.model_dump(), "generation": generation,
               "campaign": {"expected_cases": expected, "completed_cases": len(results),
-                           "complete": complete, "errors": errors, "violations": len(violations)},
+                           "complete": complete, "errors": errors, "violations": len(violations),
+                           "inconclusive": len(inconclusive)},
               "findings": findings, "cases": [asdict(case) for case in results],
               "limitations": [LIMITATION, "Instrumented local ASGI sample; PostgreSQL and fake gateway only.",
                               "Disposable PostgreSQL schema per campaign; local Python adapters execute trusted code.",
+                              "Injected transport/storage failures do not model process death or provider recovery.",
                               "No crash recovery, real provider, or arbitrary repository instrumentation."]}
     (folder / "report.json").write_text(json.dumps(report, default=str, indent=2) + "\n")
     lines = ["# ChangeProof verification", "", f"Status: {status}", "",
              f"Target: `{target['path']}` ({target['variant']})", "",
-             f"Cases: {len(results)}/{expected}; violations: {len(violations)}; errors: {errors}.", ""]
+             f"Cases: {len(results)}/{expected}; violations: {len(violations)}; errors: {errors}; "
+             f"inconclusive: {len(inconclusive)}.", ""]
     for finding in findings:
         lines.append(f"- [{finding['id']}]({finding['id']}.md): {finding['observed_charges']} charges")
+    if inconclusive:
+        lines.extend(["", "## Unresolved payments", ""])
+        for case in inconclusive:
+            lines.append(f"- `{case.scenario}`; key `{case.key}`; "
+                         f"state `{case.observations.get('payment_state', 'unknown')}`: {case.error}")
     lines.extend(["", "## Limitations", "", *[f"- {item}" for item in report["limitations"]], ""])
     (folder / "report.md").write_text("\n".join(lines))
     return report, folder

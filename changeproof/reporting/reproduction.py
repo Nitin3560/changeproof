@@ -17,11 +17,12 @@ class ReproduceViolation(unittest.TestCase):
         config = CampaignConfig.model_validate({config.model_dump()!r})
         scenario = Scenario({case.scenario!r}, str(uuid4()), {count!r},
                             concurrent={case.input.get("concurrent", case.scenario == "concurrent_duplicates")!r},
-                            amount={case.input.get("amount", 500)!r}, account_id={case.input.get("account_id", "A100")!r})
+                            amount={case.input.get("amount", 500)!r}, account_id={case.input.get("account_id", "A100")!r},
+                            fault={case.input.get("fault")!r})
         results = asyncio.run(run_benchmark(config, target.VARIANT,
             app_factory=target.create_app, scenarios=[scenario]))
         result = results[0]
-        if result.status == "error":
+        if result.status in {"error", "inconclusive"}:
             raise RuntimeError(result.error)
         self.assertLessEqual(len(result.effects), 1,
             f"Duplicate charges: {{len(result.effects)}}; key={{result.key}}")
